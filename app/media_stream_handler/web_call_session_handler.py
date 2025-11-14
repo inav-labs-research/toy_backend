@@ -41,20 +41,42 @@ class WebCallSessionHandler(ICallSessionHandler):
     def interrupt_stream(self) -> None:
         """Interrupt detected (sync), notifying web client."""
         try:
+            # Check if websocket is still connected
+            from starlette.websockets import WebSocketState
+            if self.websocket.client_state == WebSocketState.DISCONNECTED:
+                logger.debug("WebSocket disconnected, skipping interrupt signal (sync)", "web_interrupt_sync")
+                return
+                
             logger.info("Interrupt detected (sync), notifying web client", "web_interrupt_sync")
             asyncio.run_coroutine_threadsafe(
                 self.websocket.send_text(VOICE_INTRUPTION_SIGNAL), asyncio.get_event_loop()
             )
+        except RuntimeError as e:
+            if "close message has been sent" in str(e):
+                logger.debug("WebSocket already closed, skipping interrupt signal (sync)", "web_interrupt_sync")
+            else:
+                logger.error(f"Failed to send interrupt (sync): {e}", "web_interrupt_sync_error")
         except Exception as e:
             logger.error(f"Failed to send interrupt (sync): {e}", "web_interrupt_sync_error")
 
     def send_audio_to_client(self, audio_message) -> None:
         """Send audio to web client (sync)."""
         try:
+            # Check if websocket is still connected
+            from starlette.websockets import WebSocketState
+            if self.websocket.client_state == WebSocketState.DISCONNECTED:
+                logger.debug("WebSocket disconnected, skipping audio send (sync)", "web_send_audio_sync")
+                return
+                
             logger.debug("Sending audio to web client (sync)", "web_send_audio_sync")
             asyncio.run_coroutine_threadsafe(
                 self.websocket.send_bytes(getattr(audio_message, "message", audio_message)), self.stream_handler.loop
             )
+        except RuntimeError as e:
+            if "close message has been sent" in str(e):
+                logger.debug("WebSocket already closed, skipping audio send (sync)", "web_send_audio_sync")
+            else:
+                logger.error(f"Failed to send audio (sync): {e}", "web_send_audio_sync_error")
         except Exception as e:
             logger.error(f"Failed to send audio (sync): {e}", "web_send_audio_sync_error")
 
@@ -80,6 +102,11 @@ class WebCallSessionHandler(ICallSessionHandler):
                 
             logger.info("Interrupt detected (async), notifying web client", "web_interrupt_async")
             await self.websocket.send_text(VOICE_INTRUPTION_SIGNAL)
+        except RuntimeError as e:
+            if "close message has been sent" in str(e):
+                logger.debug("WebSocket already closed, skipping interrupt signal", "web_interrupt_async")
+            else:
+                logger.error(f"Failed to send interrupt (async): {e}", "web_interrupt_async_error")
         except Exception as e:
             logger.error(f"Failed to send interrupt (async): {e}", "web_interrupt_async_error")
 
@@ -94,6 +121,11 @@ class WebCallSessionHandler(ICallSessionHandler):
                 
             logger.debug("Sending audio to web client (async)", "web_send_audio_async")
             await self.websocket.send_bytes(getattr(audio_message, "message", audio_message))
+        except RuntimeError as e:
+            if "close message has been sent" in str(e):
+                logger.debug("WebSocket already closed, skipping audio send", "web_send_audio_async")
+            else:
+                logger.error(f"Failed to send audio (async): {e}", "web_send_audio_async_error")
         except Exception as e:
             logger.error(f"Failed to send audio (async): {e}", "web_send_audio_async_error")
 
@@ -109,12 +141,23 @@ class WebCallSessionHandler(ICallSessionHandler):
     def send_text_to_client(self, text: str) -> None:
         """Send text message to web client (sync)."""
         try:
+            # Check if websocket is still connected
+            from starlette.websockets import WebSocketState
+            if self.websocket.client_state == WebSocketState.DISCONNECTED:
+                logger.debug("WebSocket disconnected, skipping text send (sync)", "web_send_text_sync")
+                return
+                
             import json
             message = json.dumps({"event_type": "llm_text", "text": text})
             logger.debug(f"Sending text to web client (sync): {text[:50]}...", "web_send_text_sync")
             asyncio.run_coroutine_threadsafe(
                 self.websocket.send_text(message), self.stream_handler.loop
             )
+        except RuntimeError as e:
+            if "close message has been sent" in str(e):
+                logger.debug("WebSocket already closed, skipping text send (sync)", "web_send_text_sync")
+            else:
+                logger.error(f"Failed to send text (sync): {e}", "web_send_text_sync_error")
         except Exception as e:
             logger.error(f"Failed to send text (sync): {e}", "web_send_text_sync_error")
 
@@ -131,6 +174,11 @@ class WebCallSessionHandler(ICallSessionHandler):
             message = json.dumps({"event_type": "llm_text", "text": text})
             logger.debug(f"Sending text to web client (async): {text[:50]}...", "web_send_text_async")
             await self.websocket.send_text(message)
+        except RuntimeError as e:
+            if "close message has been sent" in str(e):
+                logger.debug("WebSocket already closed, skipping text send", "web_send_text_async")
+            else:
+                logger.error(f"Failed to send text (async): {e}", "web_send_text_async_error")
         except Exception as e:
             logger.error(f"Failed to send text (async): {e}", "web_send_text_async_error")
 
@@ -147,6 +195,11 @@ class WebCallSessionHandler(ICallSessionHandler):
             message = json.dumps({"event_type": event_type, "text": text})
             logger.debug(f"Sending {event_type} to web client (async): {text[:50]}...", "web_send_json_async")
             await self.websocket.send_text(message)
+        except RuntimeError as e:
+            if "close message has been sent" in str(e):
+                logger.debug("WebSocket already closed, skipping JSON send", "web_send_json_async")
+            else:
+                logger.error(f"Failed to send JSON message (async): {e}", "web_send_json_async_error")
         except Exception as e:
             logger.error(f"Failed to send JSON message (async): {e}", "web_send_json_async_error")
 

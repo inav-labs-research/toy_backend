@@ -33,6 +33,32 @@ class WebSocketStreamHandler:
         self.session_timeout = StaticMemoryCache.get_config("general", "call_session_timeout")
         self.session_start_time = None
 
+    def _is_websocket_connected(self, websocket: WebSocket) -> bool:
+        """Check if websocket is still connected."""
+        try:
+            from starlette.websockets import WebSocketState
+            return websocket.client_state == WebSocketState.CONNECTED
+        except Exception:
+            return False
+
+    async def _safe_send_text(self, websocket: WebSocket, message: str) -> bool:
+        """Safely send text message to websocket."""
+        try:
+            if not self._is_websocket_connected(websocket):
+                logger.debug("WebSocket disconnected, skipping text send", "web_socket_stream_handler")
+                return False
+            await websocket.send_text(message)
+            return True
+        except RuntimeError as e:
+            if "close message has been sent" in str(e):
+                logger.debug("WebSocket already closed, skipping text send", "web_socket_stream_handler")
+            else:
+                logger.error(f"Failed to send text: {e}", "web_socket_stream_handler")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send text: {e}", "web_socket_stream_handler")
+            return False
+
     async def handle_stream(
         self,
         websocket: WebSocket,
@@ -51,11 +77,21 @@ class WebSocketStreamHandler:
             await real_time_handler.lazy_initialize()
             await real_time_handler.generate_first_response_from_agent("WEBSITE")
 
-            await websocket.send_text(json.dumps({"event_type": "start_media_streaming"}))
+            # Check if websocket is still connected before sending start event
+            if self._is_websocket_connected(websocket):
+                await self._safe_send_text(websocket, json.dumps({"event_type": "start_media_streaming"}))
+            else:
+                logger.warning("WebSocket disconnected before sending start_media_streaming event", "web_socket_stream_handler")
+                return
 
             # Handle web audio stream
             while not self.should_stop.is_set():
                 try:
+                    # Check if websocket is still connected before trying to receive
+                    if not self._is_websocket_connected(websocket):
+                        logger.info("WebSocket disconnected, ending stream loop", "web_socket_stream_handler")
+                        break
+                    
                     data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.5)
                     await self._process_incoming_data(data, real_time_handler)
                     await self._cleanup_tasks()
@@ -66,6 +102,15 @@ class WebSocketStreamHandler:
                     continue
                 except WebSocketDisconnect:
                     logger.info("WebSocket disconnected by client", "web_socket_stream_handler")
+                    break
+                except RuntimeError as e:
+                    # Handle websocket connection errors gracefully
+                    error_msg = str(e).lower()
+                    if "not connected" in error_msg or "accept" in error_msg:
+                        logger.info("WebSocket connection lost, ending stream loop", "web_socket_stream_handler")
+                        break
+                    else:
+                        logger.error(f"RuntimeError receiving data: {e}", "web_socket_stream_handler", exc_info=True)
                     break
                 except Exception as e:
                     logger.error(f"Error receiving data: {e}", "web_socket_stream_handler", exc_info=True)

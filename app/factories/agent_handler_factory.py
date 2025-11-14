@@ -67,7 +67,7 @@ class AgentHandlerFactory:
 
             # Create TTS processor
             tts_config = config.get("models", {}).get("tts_model", {})
-            tts_language = tts_config.get("language", "en")
+            tts_language = tts_config.get("language", "hi")
             tts_processor = CartesiaTTSProcessor(config=tts_config, language=tts_language)
 
             # Create STT client - check which provider is active
@@ -87,19 +87,21 @@ class AgentHandlerFactory:
                 streaming_stt_client = CartesiaRealtimeSTT(
                     api_key=cartesia_stt_config.get("api_key", ""),
                     model_name=cartesia_stt_config.get("model_name", "ink-whisper"),
-                    language=cartesia_stt_config.get("language", "en"),
+                    language=cartesia_stt_config.get("language", "hi"),
                     sample_rate=cartesia_stt_config.get("sample_rate", 16000),
                 )
             elif soniox_active:
                 # Use Soniox STT
                 logger.info("Using Soniox STT provider", "AgentHandlerFactory")
+                from app.data_layer.data_classes.domain_models.user_input_source import UserInputSource
                 streaming_stt_client = SonioxRealtimeSTT(
                     api_key=soniox_config.get("api_key", ""),
                     model_name=soniox_config.get("model_name", "stt-rt-preview-v2"),
+                    user_input_source=UserInputSource.WEBSITE,  # Default to website for toy_backend
                     sample_rate=soniox_config.get("sample_rate", 16000),
                     num_channels=soniox_config.get("num_channels", 1),
                     audio_format=soniox_config.get("audio_format", "pcm_s16le"),
-                    language_hints=soniox_config.get("language_hints", ["en"]),
+                    language_hints=soniox_config.get("language_hints", ["hi"]),
                     enable_language_identification=soniox_config.get("enable_language_identification", True),
                     enable_speaker_diarization=soniox_config.get("enable_speaker_diarization", False),
                     enable_endpoint_detection=soniox_config.get("enable_endpoint_detection", True),
@@ -110,7 +112,7 @@ class AgentHandlerFactory:
                 streaming_stt_client = CartesiaRealtimeSTT(
                     api_key=cartesia_stt_config.get("api_key", ""),
                     model_name=cartesia_stt_config.get("model_name", "ink-whisper"),
-                    language=cartesia_stt_config.get("language", "en"),
+                    language=cartesia_stt_config.get("language", "hi"),
                     sample_rate=cartesia_stt_config.get("sample_rate", 16000),
                 )
 

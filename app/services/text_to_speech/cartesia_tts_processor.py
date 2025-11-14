@@ -19,12 +19,12 @@ class CartesiaTTSConfig:
         if not self.api_key:
             raise ValueError("Cartesia API key is required in config")
         self.model_id = config.get("model_name", "sonic-3")
-        self.voice_id = config.get("default_voice", "f9836c6e-a0bd-460e-9d3c-f7299fa60f94")
+        self.voice_id = config.get("default_voice", "cc00e582-ed66-4004-8336-0175b85c85f6")
         self.api_base = config.get("api_base", "https://api.cartesia.ai")
         self.api_version = config.get("api_version", "2025-04-16")
         
         # Generation config for speed, volume, and emotion
-        self.speed = config.get("speed", 1.0)  # Default 1.0, range 0.6-1.5
+        self.speed = config.get("speed", 1.0)  # Default 0.7, range 0.6-1.5
         self.volume = config.get("volume", 1.0)  # Default 1.0, range 0.5-2.0
         self.emotion = config.get("emotion", None)  # Optional emotion guidance
         

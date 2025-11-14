@@ -1,230 +1,258 @@
 """
 Soniox realtime STT implementation.
+Async Soniox real-time STT with buffered streaming, modeled after CartesiaRealtimeSTT.
 """
+import asyncio
 import json
-import threading
-import queue
 import numpy as np
-from typing import Optional
-from websockets.sync.client import connect
-from websockets import ConnectionClosedOK
+from typing import Optional, Union
+from websockets.client import connect as ws_connect
+from app.data_layer.data_classes.domain_models.user_input_source import UserInputSource
 from app.models.stt_models.base_realtime_stt import BaseRealtimeSTT
 from app.utils.logger import logger
 
 
 class SonioxRealtimeSTT(BaseRealtimeSTT):
-    """Soniox STT implementation with real-time streaming support."""
-    
+    """Async Soniox real-time STT with buffered streaming, modeled after CartesiaRealtimeSTT."""
+
     def __init__(
-        self, 
+        self,
+        api_key: str,
         model_name: str = "stt-rt-preview-v2",
-        api_key: str = "",
-        sample_rate: int = 16000,
-        num_channels: int = 1,
-        audio_format: str = "pcm_s16le",
+        user_input_source: UserInputSource = UserInputSource.WEBSITE,
         language_hints: Optional[list] = None,
+        sample_rate: int = 16000,
         enable_language_identification: bool = True,
         enable_speaker_diarization: bool = False,
         enable_endpoint_detection: bool = True,
         context: str = "",
         translation: Optional[dict] = None,
-    ) -> None:
+        num_channels: int = 1,
+        audio_format: str = "pcm_s16le",
+    ):
         self.api_key = api_key
         self.model = model_name
+        self.user_input_source = user_input_source
+        # Both WEBSITE and DEVICE use high-quality audio settings
         self.sample_rate = sample_rate
-        self.num_channels = num_channels
-        self.audio_format = audio_format
-        self.language_hints = language_hints if language_hints else ["en"]
+        self.encoding = audio_format
+        self.language_hints = language_hints or ["hi"]
         self.enable_language_identification = enable_language_identification
         self.enable_speaker_diarization = enable_speaker_diarization
         self.enable_endpoint_detection = enable_endpoint_detection
         self.context = context
         self.translation = translation or {}
-        
+
         self.websocket_url = "wss://stt-rt.soniox.com/transcribe-websocket"
-        self.client = None
+        self.ws = None
         self.is_connected = False
-        self.audio_queue = queue.Queue()
-        self.current_transcription = ""
-        self.final_transcription = ""
-        self.streaming_thread = None
-        self._transcript_lock = threading.Lock()
-        
-    def initalize(self):
-        """Initialize and start the Soniox streaming session."""
+
+        # Transcript buffers
+        self._accumulated_transcript = ""
+        self._current_partial = ""
+
+        # Async background tasks
+        self._receive_task: Optional[asyncio.Task] = None
+        self._audio_send_task: Optional[asyncio.Task] = None
+
+        # Audio queue and buffer
+        self._audio_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        self.audio_buffer = b""
+        self.buffer_duration_ms = 100
+        self.bytes_per_ms = (self.sample_rate * 2) // 1000  # 16-bit PCM
+
+        # Callback for when final transcript is ready
+        self._on_final_transcript_callback = None
+        # Callback for partial transcripts (for early interruption detection)
+        self._on_partial_transcript_callback = None
+        self._main_loop = None
+
+    def set_on_final_transcript_callback(self, callback, loop=None):
+        """Set callback to be called immediately when final transcript arrives."""
+        self._on_final_transcript_callback = callback
+        self._main_loop = loop
+
+    def set_on_partial_transcript_callback(self, callback, loop=None):
+        """Set callback to be called when partial transcript arrives (for early interruption)."""
+        self._on_partial_transcript_callback = callback
+        if not self._main_loop:
+            self._main_loop = loop
+
+    async def initalize(self):
+        """Connect and start Soniox WebSocket session."""
+        config = self._get_config()
+
+        logger.info("Connecting to Soniox STT...", "SonioxRealtimeSTT")
+        self.ws = await ws_connect(self.websocket_url)
+        self.is_connected = True
+
+        await self.ws.send(json.dumps(config))
+        logger.info("Connected and configuration sent", "SonioxRealtimeSTT")
+
+        # Start async background tasks
+        self._receive_task = asyncio.create_task(self._receive_results())
+        self._audio_send_task = asyncio.create_task(self._audio_sender())
+
+    async def _audio_sender(self):
+        """Send buffered audio chunks to Soniox."""
         try:
-            if self.is_connected:
-                logger.warning("Already connected to Soniox", "SonioxRealtimeSTT")
-                return
-                
-            # Start streaming in a separate thread
-            self.streaming_thread = threading.Thread(target=self._run_streaming_session, daemon=True)
-            self.streaming_thread.start()
-            
-            # Wait a bit for connection to establish
-            import time
-            time.sleep(0.5)
-            
-            logger.info("Started Soniox streaming session", "SonioxRealtimeSTT")
-            
-        except Exception as e:
-            logger.error(f"Error initializing streaming: {str(e)}", "SonioxRealtimeSTT", exc_info=True)
-            raise
-    
-    def transcribe_stream(self, audio_data: bytes):
-        """Send audio data to Soniox for transcription."""
-        try:
-            if not self.is_connected:
-                logger.warning("Not connected to Soniox, dropping audio data", "SonioxRealtimeSTT")
-                return
-                
-            # Handle numpy arrays if needed
-            if isinstance(audio_data, np.ndarray):
-                if audio_data.dtype != np.int16:
-                    audio_data = (audio_data * 32767).astype(np.int16)
-                audio_bytes = audio_data.tobytes()
-            else:
-                audio_bytes = audio_data
-            
-            self.audio_queue.put(audio_bytes)
-            
-        except Exception as e:
-            logger.error(f"Error sending audio: {str(e)}", "SonioxRealtimeSTT", exc_info=True)
-    
-    def get_transcript(self) -> str:
-        """Get the current transcription."""
-        with self._transcript_lock:
-            return self.final_transcription if self.final_transcription else self.current_transcription
-        
-    def reset_transcript(self):
-        """Reset the current transcription."""
-        with self._transcript_lock:
-            self.current_transcription = ""
-            self.final_transcription = ""
-        logger.debug("Transcript reset", "SonioxRealtimeSTT")
-        
-    def cleanup(self):
-        """Stop Soniox streaming session."""
-        try:
-            self.is_connected = False
-            if self.client:
+            while self.is_connected or not self._audio_queue.empty():
                 try:
-                    self.client.close()
-                except:
-                    pass
-            logger.info("Stopped Soniox streaming session", "SonioxRealtimeSTT")
-        except Exception as e:
-            logger.error(f"Error stopping streaming: {str(e)}", "SonioxRealtimeSTT", exc_info=True)
-    
-    def _run_streaming_session(self):
-        """Run the streaming session in a separate thread."""
-        try:
-            config = self._get_config()
-            
-            logger.info("Connecting to Soniox...", "SonioxRealtimeSTT")
-            with connect(self.websocket_url) as ws:
-                self.client = ws
-                self.is_connected = True
-                
-                # Send first request with config
-                ws.send(json.dumps(config))
-                
-                # Start audio streaming thread
-                audio_thread = threading.Thread(target=self._stream_audio, args=(ws,), daemon=True)
-                audio_thread.start()
-                
-                logger.info("Session started", "SonioxRealtimeSTT")
-                
-                try:
-                    final_tokens = []
-                    while self.is_connected:
-                        try:
-                            message = ws.recv()
-                        except Exception as e:
-                            if not self.is_connected:
-                                break
-                            logger.debug(f"Error receiving message: {str(e)}", "SonioxRealtimeSTT")
-                            continue
-                            
-                        res = json.loads(message)
-                        
-                        # Handle error from server
-                        if res.get("error_code") is not None:
-                            error_msg = f"Error: {res['error_code']} - {res.get('error_message', 'Unknown error')}"
-                            logger.error(error_msg, "SonioxRealtimeSTT")
-                            break
-                        
-                        # Parse tokens from current response
-                        non_final_tokens = []
-                        for token in res.get("tokens", []):
-                            if token.get("text"):
-                                if token.get("is_final"):
-                                    final_tokens.append(token)
-                                else:
-                                    non_final_tokens.append(token)
-                        
-                        # Handle partial transcripts
-                        if non_final_tokens:
-                            partial_text = self._render_tokens([], non_final_tokens)
-                            if partial_text.strip():
-                                with self._transcript_lock:
-                                    self.current_transcription = partial_text
-                                logger.debug(f"Partial transcript: {partial_text}", "SonioxRealtimeSTT")
-                        
-                        # Handle final transcripts
-                        if final_tokens:
-                            final_text = self._render_tokens(final_tokens, [])
-                            if final_text.strip():
-                                with self._transcript_lock:
-                                    self.final_transcription = final_text
-                                    self.current_transcription = ""
-                                logger.info(f"Final transcript: {final_text}", "SonioxRealtimeSTT")
-                            final_tokens = []
-                        
-                        # Check for end of turn
-                        if res.get("finished"):
-                            logger.info("Session finished", "SonioxRealtimeSTT")
-                            if final_tokens:
-                                final_text = self._render_tokens(final_tokens, [])
-                                with self._transcript_lock:
-                                    self.final_transcription = final_text
-                            break
-                
-                except ConnectionClosedOK:
-                    logger.info("Connection closed normally", "SonioxRealtimeSTT")
-                except Exception as e:
-                    logger.error(f"Error in streaming session: {str(e)}", "SonioxRealtimeSTT", exc_info=True)
-                finally:
-                    self.is_connected = False
-                    
-        except Exception as e:
-            logger.error(f"Error running streaming session: {str(e)}", "SonioxRealtimeSTT", exc_info=True)
-            self.is_connected = False
-    
-    def _stream_audio(self, ws):
-        """Stream audio data to the websocket."""
-        try:
-            while self.is_connected:
-                try:
-                    audio_data = self.audio_queue.get(timeout=0.1)
-                    ws.send(audio_data)
-                except queue.Empty:
+                    chunk = await asyncio.wait_for(self._audio_queue.get(), timeout=1.0)
+                    await self.ws.send(chunk)
+                    logger.debug(f"Sent {len(chunk)} bytes of audio", "SonioxRealtimeSTT")
+                except asyncio.TimeoutError:
                     continue
                 except Exception as e:
-                    logger.error(f"Error streaming audio: {str(e)}", "SonioxRealtimeSTT", exc_info=True)
+                    logger.error(f"Error sending audio: {e}", "SonioxRealtimeSTT")
+                    self.is_connected = False
                     break
-            
-            # Send empty string to signal end of audio
+
+            # Send empty message to mark end of stream
             try:
-                ws.send("")
-            except:
+                await self.ws.send("")
+            except Exception:
                 pass
-                
+        except asyncio.CancelledError:
+            logger.debug("Audio sender cancelled", "SonioxRealtimeSTT")
+
+    async def _receive_results(self):
+        """Receive and process Soniox transcription messages."""
+        try:
+            async for message in self.ws:
+                res = json.loads(message)
+
+                # Error handling
+                if res.get("error_code"):
+                    msg = f"Soniox error {res['error_code']}: {res.get('error_message')}"
+                    logger.error(msg, "SonioxRealtimeSTT")
+                    break
+
+                final_tokens, non_final_tokens = [], []
+                for token in res.get("tokens", []):
+                    if token.get("is_final"):
+                        final_tokens.append(token)
+                    else:
+                        non_final_tokens.append(token)
+
+                # Handle partials
+                if non_final_tokens:
+                    partial_text = self._render_tokens([], non_final_tokens)
+                    if partial_text.strip():
+                        self._current_partial = partial_text
+                        logger.debug(f"Partial: {partial_text}", "SonioxRealtimeSTT")
+                        
+                        # Call partial callback immediately for early interruption detection
+                        if self._on_partial_transcript_callback:
+                            try:
+                                if self._main_loop and self._main_loop.is_running():
+                                    asyncio.run_coroutine_threadsafe(
+                                        self._on_partial_transcript_callback(partial_text),
+                                        self._main_loop
+                                    )
+                                else:
+                                    # If no loop specified, try to schedule in current loop
+                                    asyncio.create_task(self._on_partial_transcript_callback(partial_text))
+                            except Exception as e:
+                                logger.error(f"Error calling partial transcript callback: {e}", "SonioxRealtimeSTT")
+
+                # Handle finals
+                if final_tokens:
+                    final_text = self._render_tokens(final_tokens, [])
+                    if final_text.strip():
+                        self._accumulated_transcript += (" " + final_text).strip()
+                        self._current_partial = ""
+                        logger.info(f"✓ Final: {final_text}", "SonioxRealtimeSTT")
+                        
+                        # Immediately call callback if set (process transcript without waiting for EOS)
+                        if self._on_final_transcript_callback:
+                            full_transcript = self._accumulated_transcript
+                            # Clear accumulated so get_transcript() doesn't return it again
+                            self._accumulated_transcript = ""
+                            
+                            # Call callback in main event loop
+                            try:
+                                if self._main_loop and self._main_loop.is_running():
+                                    asyncio.run_coroutine_threadsafe(
+                                        self._on_final_transcript_callback(full_transcript),
+                                        self._main_loop
+                                    )
+                                else:
+                                    # If no loop specified, try to schedule in current loop
+                                    asyncio.create_task(self._on_final_transcript_callback(full_transcript))
+                            except Exception as e:
+                                logger.error(f"Error calling transcript callback: {e}", "SonioxRealtimeSTT")
+
+                if res.get("finished"):
+                    logger.info("Session finished", "SonioxRealtimeSTT")
+                    break
+
+        except asyncio.CancelledError:
+            logger.debug("Receive task cancelled", "SonioxRealtimeSTT")
         except Exception as e:
-            logger.error(f"Error in audio streaming: {str(e)}", "SonioxRealtimeSTT", exc_info=True)
-    
-    def _get_config(self) -> dict:
-        """Get Soniox configuration."""
+            logger.error(f"Receive loop error: {e}", "SonioxRealtimeSTT")
+        finally:
+            self.is_connected = False
+
+    def transcribe_stream(self, audio_data: Union[bytes, np.ndarray]):
+        """Queue audio for sending asynchronously."""
+        if not self.is_connected:
+            logger.debug("Not connected, skipping audio", "SonioxRealtimeSTT")
+            return
+
+        if isinstance(audio_data, np.ndarray):
+            if audio_data.dtype != np.int16:
+                audio_data = (audio_data * 32767).astype(np.int16)
+            audio_data = audio_data.tobytes()
+
+        self.audio_buffer += audio_data
+        target_buffer_size = self.buffer_duration_ms * self.bytes_per_ms
+
+        while len(self.audio_buffer) >= target_buffer_size:
+            chunk = self.audio_buffer[:target_buffer_size]
+            self.audio_buffer = self.audio_buffer[target_buffer_size:]
+            try:
+                self._audio_queue.put_nowait(chunk)
+            except asyncio.QueueFull:
+                logger.warning("Audio queue full, dropping chunk", "SonioxRealtimeSTT")
+
+    def get_transcript(self):
+        """Return accumulated + current partial transcript."""
+        if self._accumulated_transcript:
+            t = self._accumulated_transcript
+            self._accumulated_transcript = ""
+            return t
+        return self._current_partial or ""
+
+    def reset_transcript(self):
+        """Clear transcript buffers."""
+        self._accumulated_transcript = ""
+        self._current_partial = ""
+        logger.debug("Transcript reset", "SonioxRealtimeSTT")
+
+    async def cleanup(self):
+        """Gracefully close websocket and cancel tasks."""
+        try:
+            self.is_connected = False
+            for task in [self._receive_task, self._audio_send_task]:
+                if task and not task.done():
+                    task.cancel()
+                    try:
+                        await asyncio.wait_for(task, timeout=2)
+                    except asyncio.TimeoutError:
+                        pass
+
+            if self.ws:
+                await self.ws.close()
+
+            self.ws = None
+            logger.info("Soniox connection cleaned up", "SonioxRealtimeSTT")
+
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}", "SonioxRealtimeSTT")
+
+    def _get_config(self):
+        """Prepare Soniox websocket config message."""
         config = {
             "api_key": self.api_key,
             "model": self.model,
@@ -232,52 +260,25 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
             "enable_language_identification": self.enable_language_identification,
             "enable_speaker_diarization": self.enable_speaker_diarization,
             "enable_endpoint_detection": self.enable_endpoint_detection,
+            "audio_format": self.encoding,
+            "sample_rate": self.sample_rate,
+            "num_channels": 1,
         }
-        
         if self.context:
             config["context"] = self.context
-        
         if self.translation:
             config["translation"] = self.translation
-        
-        if self.audio_format == "pcm_s16le":
-            config["audio_format"] = "pcm_s16le"
-            config["sample_rate"] = self.sample_rate
-            config["num_channels"] = self.num_channels
-        else:
-            config["audio_format"] = self.audio_format
-        
         return config
-    
-    def _render_tokens(self, final_tokens: list, non_final_tokens: list) -> str:
-        """Convert tokens into a readable transcript."""
+
+    def _render_tokens(self, final_tokens, non_final_tokens):
+        """Render Soniox tokens into readable text."""
+        ignore_tokens = {"<end>", "<start>", "<s>", "</s>"}
         text_parts = []
-        current_speaker = None
-        current_language = None
         
-        for token in final_tokens + non_final_tokens:
-            text = token.get("text", "")
-            if not text:
-                continue
-                
-            speaker = token.get("speaker")
-            language = token.get("language")
-            is_translation = token.get("translation_status") == "translation"
-            
-            if speaker is not None and speaker != current_speaker:
-                if current_speaker is not None:
-                    text_parts.append("\n\n")
-                current_speaker = speaker
-                current_language = None
-                text_parts.append(f"Speaker {current_speaker}:")
-            
-            if language is not None and language != current_language:
-                current_language = language
-                prefix = "[Translation] " if is_translation else ""
-                text_parts.append(f"\n{prefix}[{current_language}] ")
-                text = text.lstrip()
-            
-            text_parts.append(text)
+        for t in final_tokens + non_final_tokens:
+            txt = t.get("text", "")
+            if txt and txt.strip() not in ignore_tokens:
+                text_parts.append(txt)
         
-        return "".join(text_parts)
+        return "".join(text_parts).strip()
 

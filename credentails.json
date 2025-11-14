@@ -1,6 +1,6 @@
 {
-    "models": {
-        "llm_model": {
+    "llms": {
+        "gemini": {
             "model_provider": "gemini",
             "api_key": "AIzaSyAxfR0I-xuZYiER0SIjkzy0Y4X3HXMuuTY",
             "temperature": 0.7,
@@ -9,45 +9,60 @@
             "model_id": "gemini-2.0-flash",
             "max_tokens": 1000
         },
-        "tts_model": {
-            "api_key": "sk_car_AspLzXrWPex5moq9XLgvHb",
-            "model_name": "sonic-3",
-            "default_voice": "cc00e582-ed66-4004-8336-0175b85c85f6",
+        "qwen": {
+            "model_provider": "qwen",
+            "api_key": "snsbgUvAcJ8bKvIbTOVqvi3Wm0DB4gDn",
+            "temperature": 0.5,
+            "model_name": "zai-org/GLM-4.5",
+            "api_base": "https://api.deepinfra.com/v1/openai",
+            "model_id": "zai-org/GLM-4.5",
+            "thinking": false,
+            "platform": "deepinfra",
+            "reasoning_efforts": "none"
+        }
+    },
+    "tts": {
+        "cartesia": {
             "model_provider": "cartesia",
+            "api_key": "sk_car_fk89KKfHcjwNFskntHaJsV", //my api key
+            "model_name": "sonic-3",
+            "default_voice": "cdd0005c-8211-49ad-9152-719e854f804b",
             "api_base": "https://api.cartesia.ai",
             "api_version": "2025-04-16",
             "language": "hi",
-            "speed": 1.0,
+            "speed": 0.85,
             "web_encoding": "pcm_s16le",
             "web_sample_rate": 16000,
             "twilio_encoding": "pcm_mulaw",
             "twilio_sample_rate": 8000
-        },
-        "stt_model": {
+        }
+    },
+    "stt": {
+        "soniox": {
+            "model_provider": "soniox",
+            "api_key": "7bd8216674da70d7f2b08e931f345b9fd32d0d25ffcfeaa3bc2224279b206b03",
             "id": "9f653d3b-2c9d-4c9a-9c58-e1a50b81b7dd",
             "name": "Soniox",
             "model_name": "stt-rt-preview-v2",
-            "model_provider": "soniox",
-            "api_key": "7bd8216674da70d7f2b08e931f345b9fd32d0d25ffcfeaa3bc2224279b206b03",
-            "supported_languages": ["hi"],
+            "supported_languages": ["en"],
             "requires_api_key": true,
             "sample_rate": 16000,
             "num_channels": 1,
             "audio_format": "pcm_s16le",
-            "language_hints": ["hi"],
+            "language_hints": ["en"],
             "enable_language_identification": true,
             "enable_speaker_diarization": false,
             "enable_endpoint_detection": true,
             "created_at": "2025-11-06 12:04:08.403299+00",
             "updated_at": "2025-11-06 12:04:08.403299+00",
             "is_default": false,
-            "active": true
+            "active": false
         },
-        "cartesia_stt": {
-            "id": "5add9b5d-cbd0-4e0a-886b-2eecb0bf1b10",
-            "name": "Cartesia",
+        "cartesia": {
             "model_provider": "cartesia",
             "api_key": "sk_car_fk89KKfHcjwNFskntHaJsV",
+            "id": "5add9b5d-cbd0-4e0a-886b-2eecb0bf1b10",
+            "name": "Cartesia",
             "model_name": "ink-whisper",
             "supported_languages": ["hi"],
             "requires_api_key": true,
@@ -56,42 +71,20 @@
             "created_at": "2025-11-07 09:07:53.293947+00",
             "updated_at": "2025-11-07 09:07:53.293947+00",
             "is_default": false,
-            "active": false
+            "active": true
         },
         "deepgram": {
+            "model_provider": "deepgram",
             "api_key": "",
             "model_name": "nova-2"
-        },
-        "vad_model": {
-            "model_name": "silero_vad",
-            "model_repo": "snakers4/silero-vad",
-            "threshold": 0.7,
-            "sampling_rate": 16000,
-            "min_speech_duration_ms": 250,
-            "min_silence_duration_ms": 500
         }
     },
-    "noise_reduction": {
-        "should_use_noise_reduction": false,
-        "rnnoise_reduction_enabled": true,
-        "deep_filter_reduction_enabled": false
-    },
-    "general": {
-        "use_transcription_based_inference": true,
-        "audio_input_recording_enabled": false,
-        "call_session_timeout": 300,
-        "tts_filler_enabled": false
-    },
-    "logging": {
-        "log_level": "INFO",
-        "log_file": "logs/toy_backend.log",
-        "log_file_max_size": 10485760,
-        "log_file_num_backups": 5,
-        "log_console": true,
-        "use_struct_logger": true
-    },
-    "server": {
-        "port": 5050
+    "vad_model": {
+        "model_name": "silero_vad",
+        "model_repo": "snakers4/silero-vad",
+        "threshold": 0.7,
+        "sampling_rate": 16000,
+        "min_speech_duration_ms": 250,
+        "min_silence_duration_ms": 500
     }
 }
-
