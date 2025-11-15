@@ -2,6 +2,7 @@
 Speech-to-speech inference handler.
 """
 import threading
+import time
 import numpy as np
 from app.services.inferencing_handlers.inference_handler import InferenceHandler
 from app.services.text_to_speech.base_tts_processor import BaseTTSProcessor
@@ -39,6 +40,8 @@ class SpeechToSpeechHandler(InferenceHandler):
                 logger.warning("No text received for inference", "stt_interaction")
                 return
 
+            # Record STT completion time (when inference starts)
+            stt_completion_time = time.time()
             logger.info(f"Transcribed text to process: {input_text}", "stt_interaction")
 
             # Send user's transcribed text to frontend
@@ -64,11 +67,16 @@ class SpeechToSpeechHandler(InferenceHandler):
                 "max_tokens": self.llm_config.get("max_tokens", 1000)
             }
 
-            # Stream LLM response and send to TTS in chunks (like pranthora)
+            # Stream LLM response and send to TTS in real-time chunks (like pranthora)
+            # Each response_chunk.text is typically a token or part of a token
+            # Send chunks to TTS when at least 3 tokens arrive OR on sentence boundaries
             text_buffer_tts = []
             text_buffer_llm = []
             full_response = ""
             accumulated_text_for_display = ""
+            token_count = 0
+            MIN_TOKENS_FOR_TTS = 3  # Send to TTS when at least 3 tokens arrive
+            first_tts_sent = False  # Track if first TTS has been sent
             
             async for response_chunk in self.llm_client.streaming_prediction(
                 messages=messages,
@@ -83,19 +91,18 @@ class SpeechToSpeechHandler(InferenceHandler):
                     text_buffer_llm.append(output_text)
                     full_response += output_text
                     accumulated_text_for_display += output_text
+                    token_count += 1  # Each chunk is typically a token
                     
-                    # Send text chunk instantly to websocket for display
+                    # Send text chunk instantly to websocket for display (real-time)
                     if accumulated_text_for_display.strip():
                         await self.session_handler.send_text_to_client_async(accumulated_text_for_display)
                     
-                    # Check if we should send to TTS (20 words or sentence boundary)
+                    # Send to TTS when we have at least 3 tokens OR hit sentence boundary
                     current_text = "".join(text_buffer_tts)
-                    words = current_text.strip().split()
-                    word_count = len(words)
                     
-                    # Send to TTS when we have enough words or hit sentence boundary
+                    # Send when: at least 3 tokens OR on sentence boundary
                     should_send = (
-                        word_count >= 20 or 
+                        token_count >= MIN_TOKENS_FOR_TTS or 
                         any(current_text.rstrip().endswith(p) for p in ['.', '!', '?', '.\n', '!\n', '?\n'])
                     )
                     
@@ -103,9 +110,15 @@ class SpeechToSpeechHandler(InferenceHandler):
                         # Clean text before sending to TTS (remove reasoning tags, etc.)
                         cleaned_output = TextTransformation.clean_text_for_speech(current_text)
                         if cleaned_output:  # Only send if there's actual content after cleaning
-                            logger.info(f"TTS output: {cleaned_output[:100]}", "tts_output")
-                            await self._send_to_tts(cleaned_output, stop_event)
+                            logger.info(f"TTS output ({token_count} tokens): {cleaned_output[:100]}", "tts_output")
+                            # Send to TTS in streaming mode - this will stream audio chunks in real-time
+                            # Track timing for first TTS chunk
+                            await self._send_to_tts(cleaned_output, stop_event, stt_completion_time, first_tts_sent)
+                            if not first_tts_sent:
+                                first_tts_sent = True
+                        # Reset buffer and token count after sending
                         text_buffer_tts = []
+                        token_count = 0
 
             # Send any remaining text
             if text_buffer_tts:
@@ -113,7 +126,7 @@ class SpeechToSpeechHandler(InferenceHandler):
                 cleaned_remaining = TextTransformation.clean_text_for_speech(remaining_text)
                 if cleaned_remaining:
                     logger.info(f"TTS output: {cleaned_remaining[:100]}", "tts_output")
-                    await self._send_to_tts(cleaned_remaining, stop_event)
+                    await self._send_to_tts(cleaned_remaining, stop_event, stt_completion_time, first_tts_sent)
 
             if full_response:
                 # Add assistant response to history (keep original with reasoning for context)
@@ -123,7 +136,7 @@ class SpeechToSpeechHandler(InferenceHandler):
             logger.error(f"Error in voice interaction: {e}", "stt_interaction", exc_info=True)
             # Send error message to user
             try:
-                await self._send_to_tts("Something went wrong while processing your request.", stop_event)
+                await self._send_to_tts("Something went wrong while processing your request.", stop_event, None, True)
             except Exception as tts_error:
                 logger.error(f"Error sending error message to TTS: {tts_error}", "stt_interaction")
 
@@ -138,7 +151,7 @@ class SpeechToSpeechHandler(InferenceHandler):
         else:
             logger.warning("No STT client available for audio inference", "SpeechToSpeechHandler")
 
-    async def _send_to_tts(self, text: str, stop_event: threading.Event):
+    async def _send_to_tts(self, text: str, stop_event: threading.Event, stt_completion_time: float = None, first_tts_sent: bool = False):
         """Send text to TTS and stream audio to client."""
         try:
             # Check if text is only punctuation/symbols
@@ -146,9 +159,20 @@ class SpeechToSpeechHandler(InferenceHandler):
                 logger.debug(f"Skipping TTS for non-alphanumeric output: {text}", "tts_output")
                 return
             
+            # Track if this is the first audio chunk sent
+            first_audio_chunk_sent = False
+            
             async def audio_callback(audio_chunk: bytes):
                 """Callback to send audio chunks to client."""
+                nonlocal first_audio_chunk_sent
                 if not stop_event.is_set():
+                    # Measure time from STT completion to first TTS audio chunk
+                    if stt_completion_time and not first_audio_chunk_sent and not first_tts_sent:
+                        tts_start_time = time.time()
+                        time_to_tts = (tts_start_time - stt_completion_time) * 1000  # Convert to milliseconds
+                        logger.info(f"⏱️  STT to TTS latency: {time_to_tts:.2f} ms (STT completion → first TTS audio chunk)", "latency_metrics")
+                        first_audio_chunk_sent = True
+                    
                     await self.session_handler.send_audio_to_client_async(audio_chunk)
 
             await self.tts_processor.stream_text_to_speech(

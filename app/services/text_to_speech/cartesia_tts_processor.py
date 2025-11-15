@@ -145,20 +145,84 @@ class CartesiaTTSProcessor(BaseTTSProcessor):
         user_input_source=None,
         stop_event: Optional[threading.Event] = None
     ) -> AsyncGenerator[bytes, None]:
-        """Async wrapper for TTS streaming."""
-        # Run sync TTS in executor to avoid blocking
+        """Async wrapper for TTS streaming - yields chunks as they arrive."""
+        # Use a queue to pass chunks from sync executor to async generator
         loop = asyncio.get_event_loop()
-        chunks = await loop.run_in_executor(
-            None, 
-            self._sync_stream_tts,
-            text,
-            voice_id,
-            user_input_source,
-            stop_event
-        )
+        chunk_queue = asyncio.Queue()
+        finished = False
         
-        # Yield chunks asynchronously
-        for chunk in chunks:
+        def _stream_tts_to_queue():
+            """Stream TTS chunks and put them in queue immediately."""
+            nonlocal finished
+            try:
+                resolved_voice_id = voice_id if voice_id and str(voice_id).strip() else self.voice_id
+                logger.info(f"Streaming TTS from Cartesia SDK with voice_id: {resolved_voice_id}", "cartesia_tts_stream")
+
+                def _to_bytes(data) -> bytes:
+                    if isinstance(data, (bytes, bytearray, memoryview)):
+                        return bytes(data)
+                    if isinstance(data, str):
+                        try:
+                            return base64.b64decode(data, validate=True)
+                        except Exception:
+                            return data.encode("latin1", errors="ignore")
+                    return b""
+
+                client = Cartesia(api_key=self.config.api_key)
+                
+                # Prepare generation config with speed, volume, and emotion
+                generation_config = self.config.get_generation_config()
+                
+                # Build TTS request parameters
+                tts_params = {
+                    "model_id": self.config.model_id,
+                    "transcript": text,
+                    "voice": {
+                        "mode": "id",
+                        "id": resolved_voice_id,
+                    },
+                    "language": self.language,
+                    "output_format": self.config.get_output_format(user_input_source),
+                }
+                
+                # Add generation_config if we have speed/volume/emotion settings
+                if generation_config:
+                    tts_params["generation_config"] = generation_config
+                
+                response = client.tts.sse(**tts_params)
+
+                try:
+                    for chunk in response:
+                        if stop_event and stop_event.is_set():
+                            logger.info("Cartesia TTS streaming stopped by event.", "cartesia_tts_stream")
+                            break
+                        data = getattr(chunk, "data", chunk)
+                        data_bytes = _to_bytes(data)
+                        if data_bytes:
+                            # Put chunk in queue immediately (non-blocking for async)
+                            asyncio.run_coroutine_threadsafe(chunk_queue.put(data_bytes), loop)
+                except GeneratorExit:
+                    logger.info("Cartesia TTS generator closed", "cartesia_tts_stream")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in TTS generator: {str(e)}", "cartesia_tts_stream", exc_info=True)
+                    raise
+            except Exception as e:
+                logger.error(f"cartesia_tts_stream_request_failed: {str(e)}", "cartesia_tts_stream_request_failed", exc_info=True)
+            finally:
+                # Signal completion
+                finished = True
+                asyncio.run_coroutine_threadsafe(chunk_queue.put(None), loop)
+        
+        # Start streaming in background thread
+        thread = threading.Thread(target=_stream_tts_to_queue, daemon=True)
+        thread.start()
+        
+        # Yield chunks as they arrive from the queue
+        while True:
+            chunk = await chunk_queue.get()
+            if chunk is None:  # Signal that streaming is complete
+                break
             yield chunk
 
     async def stream_text_to_speech(

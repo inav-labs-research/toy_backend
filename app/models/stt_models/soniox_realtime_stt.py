@@ -14,9 +14,9 @@ from app.utils.logger import logger
 
 class SonioxRealtimeSTT(BaseRealtimeSTT):
     """Async Soniox real-time STT with buffered streaming, modeled after CartesiaRealtimeSTT."""
-
+    
     def __init__(
-        self,
+        self, 
         api_key: str,
         model_name: str = "stt-rt-preview-v2",
         user_input_source: UserInputSource = UserInputSource.WEBSITE,
@@ -42,7 +42,7 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
         self.enable_endpoint_detection = enable_endpoint_detection
         self.context = context
         self.translation = translation or {}
-
+        
         self.websocket_url = "wss://stt-rt.soniox.com/transcribe-websocket"
         self.ws = None
         self.is_connected = False
@@ -121,20 +121,20 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
         try:
             async for message in self.ws:
                 res = json.loads(message)
-
+                
                 # Error handling
                 if res.get("error_code"):
                     msg = f"Soniox error {res['error_code']}: {res.get('error_message')}"
                     logger.error(msg, "SonioxRealtimeSTT")
                     break
-
+                
                 final_tokens, non_final_tokens = [], []
                 for token in res.get("tokens", []):
                     if token.get("is_final"):
                         final_tokens.append(token)
                     else:
                         non_final_tokens.append(token)
-
+                
                 # Handle partials
                 if non_final_tokens:
                     partial_text = self._render_tokens([], non_final_tokens)
@@ -155,7 +155,7 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
                                     asyncio.create_task(self._on_partial_transcript_callback(partial_text))
                             except Exception as e:
                                 logger.error(f"Error calling partial transcript callback: {e}", "SonioxRealtimeSTT")
-
+                
                 # Handle finals
                 if final_tokens:
                     final_text = self._render_tokens(final_tokens, [])
@@ -186,14 +186,14 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
                 if res.get("finished"):
                     logger.info("Session finished", "SonioxRealtimeSTT")
                     break
-
+                
         except asyncio.CancelledError:
             logger.debug("Receive task cancelled", "SonioxRealtimeSTT")
         except Exception as e:
             logger.error(f"Receive loop error: {e}", "SonioxRealtimeSTT")
         finally:
             self.is_connected = False
-
+    
     def transcribe_stream(self, audio_data: Union[bytes, np.ndarray]):
         """Queue audio for sending asynchronously."""
         if not self.is_connected:
@@ -247,10 +247,10 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
 
             self.ws = None
             logger.info("Soniox connection cleaned up", "SonioxRealtimeSTT")
-
+                
         except Exception as e:
             logger.error(f"Cleanup error: {e}", "SonioxRealtimeSTT")
-
+    
     def _get_config(self):
         """Prepare Soniox websocket config message."""
         config = {
@@ -269,7 +269,7 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
         if self.translation:
             config["translation"] = self.translation
         return config
-
+    
     def _render_tokens(self, final_tokens, non_final_tokens):
         """Render Soniox tokens into readable text."""
         ignore_tokens = {"<end>", "<start>", "<s>", "</s>"}

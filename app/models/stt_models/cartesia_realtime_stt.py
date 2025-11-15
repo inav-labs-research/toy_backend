@@ -93,7 +93,7 @@ class CartesiaRealtimeSTT(BaseRealtimeSTT):
                     # Get audio chunk from queue with timeout
                     audio_chunk = await asyncio.wait_for(
                         self._audio_queue.get(), 
-                        timeout=1.0
+                        timeout=0.2
                     )
                     
                     if self.ws and self.is_connected:
@@ -256,7 +256,7 @@ class CartesiaRealtimeSTT(BaseRealtimeSTT):
             if self._audio_send_task and not self._audio_send_task.done():
                 self._audio_send_task.cancel()
                 try:
-                    await asyncio.wait_for(self._audio_send_task, timeout=2.0)
+                    await asyncio.wait_for(self._audio_send_task, timeout=0.2)
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
             
@@ -264,7 +264,7 @@ class CartesiaRealtimeSTT(BaseRealtimeSTT):
             if self._receive_task and not self._receive_task.done():
                 self._receive_task.cancel()
                 try:
-                    await asyncio.wait_for(self._receive_task, timeout=2.0)
+                    await asyncio.wait_for(self._receive_task, timeout=0.2)
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
             
@@ -274,7 +274,7 @@ class CartesiaRealtimeSTT(BaseRealtimeSTT):
                 
             # Close client
             if self.client:
-                    await self.client.close()
+                await self.client.close()
 
             # Clean up references
             self.ws = None

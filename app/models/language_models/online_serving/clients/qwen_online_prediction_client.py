@@ -67,8 +67,8 @@ class QwenPredictionClient(BasePredictionClient):
             # Try passing via extra_body for DeepInfra compatibility
             kwargs["extra_body"] = {"reasoning_efforts": reasoning_efforts}
         
-        # Only log URL, not payload (for privacy and performance)
-        logger.info(f"Qwen streaming prediction to: {self.api_base}/chat/completions", "qwen_online_prediction")
+        # Don't log payload (contains messages) - only log that streaming request is being made
+        logger.debug(f"Qwen streaming prediction to: {self.api_base}/chat/completions", "qwen_online_prediction")
         
         # Record start time for latency measurements
         start_time = time.time()
@@ -88,6 +88,7 @@ class QwenPredictionClient(BasePredictionClient):
                         logger.info(f"Qwen first token time: {first_token_latency:.2f} ms", "qwen_online_prediction")
                         first_token_received = True
                     
+                    # Yield each token/chunk immediately for real-time streaming
                     yield ModelStreamingResponse(text=content)
         except GeneratorExit:
             # Handle generator cleanup gracefully
