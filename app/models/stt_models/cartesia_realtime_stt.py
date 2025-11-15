@@ -86,14 +86,14 @@ class CartesiaRealtimeSTT(BaseRealtimeSTT):
         self._audio_send_task = asyncio.create_task(self._audio_sender())
 
     async def _audio_sender(self):
-        """Background task that sends buffered audio to Cartesia."""
+        """Background task that sends buffered audio to Cartesia - optimized for low latency."""
         try:
             while self.is_connected or not self._audio_queue.empty():
                 try:
-                    # Get audio chunk from queue with timeout
+                    # Get audio chunk from queue with timeout - reduced from 0.2s to 0.05s
                     audio_chunk = await asyncio.wait_for(
                         self._audio_queue.get(), 
-                        timeout=0.2
+                        timeout=0.05
                     )
                     
                     if self.ws and self.is_connected:
@@ -178,14 +178,20 @@ class CartesiaRealtimeSTT(BaseRealtimeSTT):
                             self._accumulated_transcript = ""
                             
                             # Call callback in main event loop
+                            # Optimized: use direct async call if in same event loop, otherwise use thread-safe
                             try:
-                                if self._main_loop and self._main_loop.is_running():
+                                current_loop = asyncio.get_running_loop()
+                                if self._main_loop and self._main_loop == current_loop:
+                                    # Same event loop - call directly (faster, no thread overhead)
+                                    await self._on_final_transcript_callback(full_transcript)
+                                elif self._main_loop and self._main_loop.is_running():
+                                    # Different loop - use thread-safe call
                                     asyncio.run_coroutine_threadsafe(
                                         self._on_final_transcript_callback(full_transcript),
                                         self._main_loop
                                     )
                                 else:
-                                    # If no loop specified, try to schedule in current loop
+                                    # No loop specified - schedule in current loop
                                     asyncio.create_task(self._on_final_transcript_callback(full_transcript))
                             except Exception as e:
                                 logger.error(f"Error calling transcript callback: {e}", "CartesiaRealtimeSTT")
@@ -196,15 +202,21 @@ class CartesiaRealtimeSTT(BaseRealtimeSTT):
                         
                         # Call partial callback immediately for early interruption detection
                         # This allows interruption to happen BEFORE final transcript arrives
+                        # Optimized: use direct async call if in same event loop, otherwise use thread-safe
                         if self._on_partial_transcript_callback:
                             try:
-                                if self._main_loop and self._main_loop.is_running():
+                                current_loop = asyncio.get_running_loop()
+                                if self._main_loop and self._main_loop == current_loop:
+                                    # Same event loop - call directly (faster, no thread overhead)
+                                    await self._on_partial_transcript_callback(text)
+                                elif self._main_loop and self._main_loop.is_running():
+                                    # Different loop - use thread-safe call
                                     asyncio.run_coroutine_threadsafe(
                                         self._on_partial_transcript_callback(text),
                                         self._main_loop
                                     )
                                 else:
-                                    # If no loop specified, try to schedule in current loop
+                                    # No loop specified - schedule in current loop
                                     asyncio.create_task(self._on_partial_transcript_callback(text))
                             except Exception as e:
                                 logger.error(f"Error calling partial transcript callback: {e}", "CartesiaRealtimeSTT")

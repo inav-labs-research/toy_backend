@@ -55,10 +55,10 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
         self._receive_task: Optional[asyncio.Task] = None
         self._audio_send_task: Optional[asyncio.Task] = None
 
-        # Audio queue and buffer
-        self._audio_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        # Audio queue and buffer - optimized for low latency
+        self._audio_queue: asyncio.Queue = asyncio.Queue(maxsize=20)  # Reduced queue size
         self.audio_buffer = b""
-        self.buffer_duration_ms = 100
+        self.buffer_duration_ms = 20  # Reduced from 100ms to 20ms for faster initial send
         self.bytes_per_ms = (self.sample_rate * 2) // 1000  # 16-bit PCM
 
         # Callback for when final transcript is ready
@@ -94,11 +94,12 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
         self._audio_send_task = asyncio.create_task(self._audio_sender())
 
     async def _audio_sender(self):
-        """Send buffered audio chunks to Soniox."""
+        """Send buffered audio chunks to Soniox - optimized for low latency."""
         try:
             while self.is_connected or not self._audio_queue.empty():
                 try:
-                    chunk = await asyncio.wait_for(self._audio_queue.get(), timeout=1.0)
+                    # Reduced timeout from 1.0s to 0.05s for faster processing
+                    chunk = await asyncio.wait_for(self._audio_queue.get(), timeout=0.05)
                     await self.ws.send(chunk)
                     logger.debug(f"Sent {len(chunk)} bytes of audio", "SonioxRealtimeSTT")
                 except asyncio.TimeoutError:
@@ -143,15 +144,21 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
                         logger.debug(f"Partial: {partial_text}", "SonioxRealtimeSTT")
                         
                         # Call partial callback immediately for early interruption detection
+                        # Optimized: use direct async call if in same event loop, otherwise use thread-safe
                         if self._on_partial_transcript_callback:
                             try:
-                                if self._main_loop and self._main_loop.is_running():
+                                current_loop = asyncio.get_running_loop()
+                                if self._main_loop and self._main_loop == current_loop:
+                                    # Same event loop - call directly (faster, no thread overhead)
+                                    await self._on_partial_transcript_callback(partial_text)
+                                elif self._main_loop and self._main_loop.is_running():
+                                    # Different loop - use thread-safe call
                                     asyncio.run_coroutine_threadsafe(
                                         self._on_partial_transcript_callback(partial_text),
                                         self._main_loop
                                     )
                                 else:
-                                    # If no loop specified, try to schedule in current loop
+                                    # No loop specified - schedule in current loop
                                     asyncio.create_task(self._on_partial_transcript_callback(partial_text))
                             except Exception as e:
                                 logger.error(f"Error calling partial transcript callback: {e}", "SonioxRealtimeSTT")
@@ -171,14 +178,20 @@ class SonioxRealtimeSTT(BaseRealtimeSTT):
                             self._accumulated_transcript = ""
                             
                             # Call callback in main event loop
+                            # Optimized: use direct async call if in same event loop, otherwise use thread-safe
                             try:
-                                if self._main_loop and self._main_loop.is_running():
+                                current_loop = asyncio.get_running_loop()
+                                if self._main_loop and self._main_loop == current_loop:
+                                    # Same event loop - call directly (faster, no thread overhead)
+                                    await self._on_final_transcript_callback(full_transcript)
+                                elif self._main_loop and self._main_loop.is_running():
+                                    # Different loop - use thread-safe call
                                     asyncio.run_coroutine_threadsafe(
                                         self._on_final_transcript_callback(full_transcript),
                                         self._main_loop
                                     )
                                 else:
-                                    # If no loop specified, try to schedule in current loop
+                                    # No loop specified - schedule in current loop
                                     asyncio.create_task(self._on_final_transcript_callback(full_transcript))
                             except Exception as e:
                                 logger.error(f"Error calling transcript callback: {e}", "SonioxRealtimeSTT")

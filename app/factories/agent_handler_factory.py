@@ -102,7 +102,8 @@ class AgentHandlerFactory:
                     num_channels=soniox_config.get("num_channels", 1),
                     audio_format=soniox_config.get("audio_format", "pcm_s16le"),
                     language_hints=soniox_config.get("language_hints", ["hi"]),
-                    enable_language_identification=soniox_config.get("enable_language_identification", True),
+                    # Disable language identification if language is known (faster processing)
+                    enable_language_identification=soniox_config.get("enable_language_identification", False),
                     enable_speaker_diarization=soniox_config.get("enable_speaker_diarization", False),
                     enable_endpoint_detection=soniox_config.get("enable_endpoint_detection", True),
                 )
