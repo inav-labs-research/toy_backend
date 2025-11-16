@@ -19,6 +19,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # Install Python dependencies
+# Use CPU-only PyTorch to save ~2GB of space (CUDA libraries not needed for VAD)
+# Install PyTorch CPU-only first (saves ~2GB vs CUDA version)
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.6.0 torchaudio==2.6.0
+
+# Install remaining dependencies (pip will skip torch/torchaudio as they're already installed)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
