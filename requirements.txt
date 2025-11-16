@@ -8,6 +8,7 @@ openai==1.78.1
 
 # HTTP client for Gemini
 httpx==0.27.2
+google-genai==0.2.2
 
 # Cartesia
 cartesia==2.0.15

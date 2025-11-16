@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  toy-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: toy-backend
+    ports:
+      - "5050:5050"
+    volumes:
+      # Mount config files for easy updates without rebuilding
+      - ./config.json:/app/config.json:ro
+      - ./agents.json:/app/agents.json:ro
+      # Mount logs directory to persist logs
+      - ./logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5050/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
